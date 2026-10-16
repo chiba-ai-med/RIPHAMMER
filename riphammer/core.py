@@ -32,7 +32,7 @@ class MultibandNMF:
     """
 
     def __init__(self, n_components=8, max_iter=500, random_state=42,
-                 lambda_w=0.0, tol=1e-6, mode='multiband',
+                 lambda_w=0.0, tol=1e-6, mode='single',
                  normalize_h=True, normalize_bands=True):
         self.n_components = n_components
         self.max_iter = max_iter

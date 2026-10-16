@@ -154,7 +154,7 @@ def main():
     p_fit.add_argument("--no-autosomes-only", dest="autosomes_only",
                        action="store_false")
     p_fit.add_argument("--mode", choices=["multiband", "single"],
-                       default="multiband",
+                       default="single",
                        help="NMF mode: multiband (per-band W) or single "
                             "(one big W matrix) (default: multiband)")
     p_fit.add_argument("--no-normalize-h", dest="normalize_h",
