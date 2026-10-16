@@ -21,21 +21,33 @@ class MultibandNMF:
         L2 regularization strength on W.
     tol : float
         Convergence tolerance (not currently used for early stopping).
+    mode : {'multiband', 'single'}
+        'multiband' updates W per band; 'single' concatenates all bands
+        into one matrix and runs standard NMF.  Both are mathematically
+        equivalent when the same initialization and normalization are used.
+    normalize_h : bool
+        If True, normalize H columns to sum to 1 after each update.
+    normalize_bands : bool
+        If True, apply per-band L1 column normalization to X before NMF.
     """
 
     def __init__(self, n_components=8, max_iter=500, random_state=42,
-                 lambda_w=0.0, tol=1e-6):
+                 lambda_w=0.0, tol=1e-6, mode='multiband',
+                 normalize_h=True, normalize_bands=True):
         self.n_components = n_components
         self.max_iter = max_iter
         self.random_state = random_state
         self.lambda_w = lambda_w
         self.tol = tol
+        self.mode = mode
+        self.normalize_h = normalize_h
+        self.normalize_bands = normalize_bands
         self.W_bands_ = None
         self.H_ = None
         self.band_indices_ = None
         self.errors_ = []
 
-    def fit(self, X, distances, verbose=True):
+    def fit(self, X, distances, verbose=True, trace=False):
         """Fit Multi-band NMF.
 
         Parameters
@@ -47,6 +59,9 @@ class MultibandNMF:
             Genomic distance in bins for each feature (d = j - i).
         verbose : bool
             Print progress every 50 iterations.
+        trace : bool
+            If True, store per-iteration W and H copies in self.trace_
+            (for equivalence testing on small data).
 
         Returns
         -------
@@ -57,16 +72,47 @@ class MultibandNMF:
         eps = 1e-10
 
         band_indices = _group_by_distance(distances)
-        X_bands = _normalize_bands(X, band_indices)
+
+        if self.normalize_bands:
+            X_bands = _normalize_bands(X, band_indices)
+        else:
+            X_bands = {d: X[idx, :].copy() for d, idx in band_indices.items()}
 
         rng = np.random.RandomState(self.random_state)
         H = rng.rand(K, M).astype(np.float64) + 1e-6
-        W_bands = {}
-        for d, idx in band_indices.items():
-            W_bands[d] = rng.rand(len(idx), K).astype(np.float64) + 1e-6
 
-        HHt = H @ H.T
+        W_bands_init = {}
+        for d in sorted(band_indices.keys()):
+            idx = band_indices[d]
+            W_bands_init[d] = rng.rand(len(idx), K).astype(np.float64) + 1e-6
+
+        if self.normalize_h:
+            _normalize_h_inplace(H)
+
+        if trace:
+            self.trace_ = []
+
         self.errors_ = []
+
+        if self.mode == 'multiband':
+            self._fit_multiband(
+                X_bands, W_bands_init, H, band_indices, N, M, K, eps,
+                verbose, trace)
+        elif self.mode == 'single':
+            self._fit_single(
+                X_bands, W_bands_init, H, band_indices, N, M, K, eps,
+                verbose, trace)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode!r}")
+
+        self.band_indices_ = band_indices
+        self.n_samples_ = M
+        self.n_features_ = N
+        return self
+
+    def _fit_multiband(self, X_bands, W_bands, H, band_indices,
+                       N, M, K, eps, verbose, trace):
+        HHt = H @ H.T
 
         for it in range(self.max_iter):
             for d in band_indices:
@@ -82,7 +128,18 @@ class MultibandNMF:
                 num += Wd.T @ X_bands[d]
                 den += Wd.T @ Wd
             H *= num / (den @ H + eps)
+
+            if self.normalize_h:
+                _normalize_h_inplace(H)
+
             HHt = H @ H.T
+
+            if trace:
+                self.trace_.append({
+                    'iter': it + 1,
+                    'W_bands': {d: Wd.copy() for d, Wd in W_bands.items()},
+                    'H': H.copy(),
+                })
 
             if (it + 1) % 50 == 0 or it == 0 or it == self.max_iter - 1:
                 err = _reconstruction_error(X_bands, W_bands, H, band_indices)
@@ -93,10 +150,52 @@ class MultibandNMF:
 
         self.W_bands_ = W_bands
         self.H_ = H
-        self.band_indices_ = band_indices
-        self.n_samples_ = M
-        self.n_features_ = N
-        return self
+
+    def _fit_single(self, X_bands, W_bands_init, H, band_indices,
+                    N, M, K, eps, verbose, trace):
+        X_full = np.zeros((N, M), dtype=np.float64)
+        W = np.zeros((N, K), dtype=np.float64)
+        for d, idx in band_indices.items():
+            X_full[idx, :] = X_bands[d]
+            W[idx, :] = W_bands_init[d]
+
+        HHt = H @ H.T
+
+        for it in range(self.max_iter):
+            W *= (X_full @ H.T) / (W @ HHt + self.lambda_w * W + eps)
+
+            WtX = W.T @ X_full
+            WtW = W.T @ W
+            H *= WtX / (WtW @ H + eps)
+
+            if self.normalize_h:
+                _normalize_h_inplace(H)
+
+            HHt = H @ H.T
+
+            if trace:
+                W_bands_trace = {}
+                for d, idx in band_indices.items():
+                    W_bands_trace[d] = W[idx, :].copy()
+                self.trace_.append({
+                    'iter': it + 1,
+                    'W_bands': W_bands_trace,
+                    'H': H.copy(),
+                })
+
+            if (it + 1) % 50 == 0 or it == 0 or it == self.max_iter - 1:
+                W_bands = {d: W[idx, :] for d, idx in band_indices.items()}
+                err = _reconstruction_error(X_bands, W_bands, H, band_indices)
+                self.errors_.append((it + 1, err))
+                if verbose:
+                    print(f"  iter {it+1}: ||X - WH||_F = {err:.6f}",
+                          flush=True)
+
+        W_bands = {}
+        for d, idx in band_indices.items():
+            W_bands[d] = W[idx, :]
+        self.W_bands_ = W_bands
+        self.H_ = H
 
     def fold_in(self, X, distances, max_iter=100, verbose=False):
         """Estimate H for new samples with W fixed.
@@ -120,10 +219,17 @@ class MultibandNMF:
         eps = 1e-10
 
         band_indices = _group_by_distance(distances)
-        X_bands = _normalize_bands(X, band_indices)
+
+        if self.normalize_bands:
+            X_bands = _normalize_bands(X, band_indices)
+        else:
+            X_bands = {d: X[idx, :].copy() for d, idx in band_indices.items()}
 
         rng = np.random.RandomState(self.random_state)
         H_new = rng.rand(K, M_new).astype(np.float64) + 1e-6
+
+        if self.normalize_h:
+            _normalize_h_inplace(H_new)
 
         for it in range(max_iter):
             num = np.zeros((K, M_new), dtype=np.float64)
@@ -135,6 +241,9 @@ class MultibandNMF:
                 num += Wd.T @ X_bands[d]
                 den += Wd.T @ Wd
             H_new *= num / (den @ H_new + eps)
+
+            if self.normalize_h:
+                _normalize_h_inplace(H_new)
 
             if verbose and ((it + 1) % 20 == 0 or it == 0):
                 err = _reconstruction_error(
@@ -189,6 +298,13 @@ def _normalize_bands(X, band_indices):
         col_sums[col_sums == 0] = 1.0
         X_bands[d] = Xd / col_sums[np.newaxis, :]
     return X_bands
+
+
+def _normalize_h_inplace(H):
+    """Normalize each column of H to sum to 1, in-place."""
+    col_sums = H.sum(axis=0, keepdims=True)
+    col_sums[col_sums == 0] = 1.0
+    H /= col_sums
 
 
 def _reconstruction_error(X_bands, W_bands, H, band_indices):

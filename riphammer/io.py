@@ -137,7 +137,7 @@ def mcool_to_features(cool_uris, resolution=100000, max_dist_bp=5000000,
 
 
 def w_to_cool(w_col, features, cool_path, chrom_sizes=None,
-              resolution=100000, scale=1e6):
+              resolution=100000):
     """Reconstruct symmetric contact matrix from W column and save as .cool.
 
     Parameters
@@ -151,9 +151,6 @@ def w_to_cool(w_col, features, cool_path, chrom_sizes=None,
     chrom_sizes : dict or None
         Defaults to mm10.
     resolution : int
-    scale : float
-        Multiply W values by this factor before storing (cooler rounds
-        small floats to zero).
 
     Returns
     -------
@@ -179,7 +176,7 @@ def w_to_cool(w_col, features, cool_path, chrom_sizes=None,
         chrom_bin_offset[c] = offset
         offset += (chrom_sizes[c] + resolution - 1) // resolution
 
-    bin1_ids, bin2_ids, counts = [], [], []
+    bin1_ids, bin2_ids, values = [], [], []
     for chrom in chroms:
         mask = features["chrom"] == chrom
         if not mask.any():
@@ -192,14 +189,14 @@ def w_to_cool(w_col, features, cool_path, chrom_sizes=None,
         off = chrom_bin_offset[chrom]
         bi = (feat_chr.loc[pos, "bin_i"].values + off).astype(int)
         bj = (feat_chr.loc[pos, "bin_j"].values + off).astype(int)
-        vals = w_chr[pos] * scale
+        vals = w_chr[pos].astype(np.float64)
         bin1_ids.extend(bi)
         bin2_ids.extend(bj)
-        counts.extend(vals)
+        values.extend(vals)
 
     pixels = pd.DataFrame({
-        "bin1_id": bin1_ids, "bin2_id": bin2_ids, "count": counts,
+        "bin1_id": bin1_ids, "bin2_id": bin2_ids, "count": values,
     })
     cooler.create_cooler(cool_path, bins_df, pixels, ordered=True,
-                         columns=["count"])
+                         columns=["count"], dtypes={"count": np.float64})
     return cool_path

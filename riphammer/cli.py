@@ -32,6 +32,9 @@ def cmd_fit(args):
         max_iter=args.n_iter,
         random_state=args.seed,
         lambda_w=args.lambda_w,
+        mode=args.mode,
+        normalize_h=args.normalize_h,
+        normalize_bands=args.normalize_bands,
     )
     print(f"  X: {X.shape}, K={args.k}, max_iter={args.n_iter}", flush=True)
     model.fit(X, distances, verbose=True)
@@ -150,6 +153,16 @@ def main():
     p_fit.add_argument("--autosomes-only", action="store_true", default=True)
     p_fit.add_argument("--no-autosomes-only", dest="autosomes_only",
                        action="store_false")
+    p_fit.add_argument("--mode", choices=["multiband", "single"],
+                       default="multiband",
+                       help="NMF mode: multiband (per-band W) or single "
+                            "(one big W matrix) (default: multiband)")
+    p_fit.add_argument("--no-normalize-h", dest="normalize_h",
+                       action="store_false", default=True,
+                       help="Disable per-iteration H column normalization")
+    p_fit.add_argument("--no-normalize-bands", dest="normalize_bands",
+                       action="store_false", default=True,
+                       help="Disable per-band L1 column normalization of X")
 
     # tad
     p_tad = sub.add_parser("tad", help="Detect TADs from NMF components")
